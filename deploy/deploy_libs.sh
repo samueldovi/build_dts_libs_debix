@@ -36,6 +36,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ============================================================================
@@ -58,21 +59,133 @@ log_error() {
 }
 
 # ============================================================================
+# FONCTION : RECHERCHE FLOUE DE RECETTES
+# ============================================================================
+fuzzy_search_recipe() {
+    local SEARCH_TERM=$1
+    local MAX_RESULTS=${2:-10}
+    
+    log_info "Recherche floue de recettes contenant '$SEARCH_TERM'..."
+    
+    # Récupérer toutes les recettes disponibles
+    local ALL_RECIPES=$(bitbake-layers show-recipes 2>/dev/null | grep -E "^  [a-zA-Z0-9_-]+" | awk '{print $1}' | sort -u)
+    
+    if [ -z "$ALL_RECIPES" ]; then
+        log_error "Impossible de récupérer la liste des recettes"
+        return 1
+    fi
+    
+    # Recherche avec grep (insensible à la casse)
+    local MATCHES=$(echo "$ALL_RECIPES" | grep -i "$SEARCH_TERM" | head -n "$MAX_RESULTS")
+    
+    if [ -z "$MATCHES" ]; then
+        log_warning "Aucune recette trouvée contenant '$SEARCH_TERM'"
+        return 1
+    fi
+    
+    echo "$MATCHES"
+    return 0
+}
+
+# ============================================================================
+# FONCTION : SÉLECTION INTERACTIVE DE RECETTE
+# ============================================================================
+select_recipe_interactive() {
+    local SEARCH_TERM=$1
+    local MATCHES=$2
+    local COUNT=$(echo "$MATCHES" | wc -l)
+    
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║  Recettes trouvées pour '$SEARCH_TERM' ($COUNT résultats)${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Afficher les options numérotées
+    local i=1
+    local -a RECIPE_ARRAY
+    
+    while IFS= read -r recipe; do
+        echo -e "  ${GREEN}[$i]${NC} $recipe"
+        RECIPE_ARRAY[$i]="$recipe"
+        ((i++))
+    done <<< "$MATCHES"
+    
+    echo -e "  ${RED}[0]${NC} Annuler / Aucune de ces recettes"
+    echo ""
+    
+    # Demander à l'utilisateur
+    while true; do
+        read -p "Sélectionnez le numéro de la recette à installer [0-$COUNT]: " choice
+        
+        # Vérifier que c'est un nombre
+        if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+            log_error "Veuillez entrer un nombre valide"
+            continue
+        fi
+        
+        # Annulation
+        if [ "$choice" -eq 0 ]; then
+            log_warning "Installation annulée pour '$SEARCH_TERM'"
+            return 1
+        fi
+        
+        # Vérifier que le choix est dans la plage
+        if [ "$choice" -ge 1 ] && [ "$choice" -le "$COUNT" ]; then
+            SELECTED_RECIPE="${RECIPE_ARRAY[$choice]}"
+            echo ""
+            log_success "Recette sélectionnée : $SELECTED_RECIPE"
+            echo "$SELECTED_RECIPE"
+            return 0
+        else
+            log_error "Choix invalide. Veuillez entrer un nombre entre 0 et $COUNT"
+        fi
+    done
+}
+
+# ============================================================================
+# FONCTION : CONFIRMATION D'INSTALLATION
+# ============================================================================
+confirm_installation() {
+    local RECIPE=$1
+    
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║  Informations sur la recette : $RECIPE${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Afficher les détails de la recette
+    bitbake-layers show-recipes "$RECIPE" 2>/dev/null | head -20 || true
+    
+    echo ""
+    read -p "Voulez-vous installer cette recette ? [o/N]: " confirm
+    
+    case "$confirm" in
+        [oOyY]|[oO][uU][iI]|[yY][eE][sS])
+            return 0
+            ;;
+        *)
+            log_warning "Installation annulée"
+            return 1
+            ;;
+    esac
+}
+
+# ============================================================================
 # FONCTION : RECHERCHE SUR OPENEMBEDDED LAYER INDEX
 # ============================================================================
 search_layer_index() {
     local RECIPE=$1
     log_info "Recherche de $RECIPE sur layers.openembedded.org..."
     
-    # Note: Cette fonction affiche l'URL pour une recherche manuelle
-    # Une implémentation complète nécessiterait curl/wget et parsing HTML/API
     local SEARCH_URL="https://layers.openembedded.org/layerindex/branch/master/recipes/?q=$RECIPE"
     
     echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "╔════════════════════════════════════════════════════════════╗"
     echo "  Recherche manuelle recommandée :"
     echo "  $SEARCH_URL"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
     
     # Si curl est disponible, on peut tenter une recherche basique
@@ -101,36 +214,86 @@ if [ $# -eq 0 ]; then
     echo "Usage: $0 [OPTIONS] lib1 lib2 lib3 ..."
     echo ""
     echo "Options:"
-    echo "  --search    Rechercher les recettes sur OpenEmbedded Layer Index"
-    echo "  --help      Afficher cette aide"
+    echo "  --search       Rechercher les recettes sur OpenEmbedded Layer Index"
+    echo "  --fuzzy        Mode recherche floue uniquement (sans installation)"
+    echo "  --no-confirm   Ne pas demander de confirmation (installation auto)"
+    echo "  --help         Afficher cette aide"
     echo ""
     echo "Exemples:"
     echo "  $0 libgpiod i2c-tools"
     echo "  $0 --search libusb"
+    echo "  $0 --fuzzy gpio                    # Recherche floue uniquement"
+    echo "  $0 --no-confirm libgpiod           # Installation sans confirmation"
+    echo ""
+    echo "Fonctionnalités :"
+    echo "  - Recherche floue automatique si le nom exact n'est pas trouvé"
+    echo "  - Sélection interactive des recettes trouvées"
+    echo "  - Confirmation avant installation"
     echo ""
     echo "======================================================================="
     exit 1
 fi
 
 # ============================================================================
-# MODE RECHERCHE
+# PARSING DES OPTIONS
 # ============================================================================
-if [ "$1" = "--search" ]; then
-    shift
-    if [ $# -eq 0 ]; then
-        log_error "Spécifiez au moins une recette à rechercher"
-        exit 1
-    fi
-    
-    for RECIPE in "$@"; do
-        search_layer_index "$RECIPE"
-    done
-    exit 0
-fi
+NO_CONFIRM=false
 
-if [ "$1" = "--help" ]; then
-    $0
-    exit 0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-confirm)
+            NO_CONFIRM=true
+            shift
+            ;;
+        --fuzzy)
+            shift
+            if [ $# -eq 0 ]; then
+                log_error "Spécifiez au moins un terme de recherche"
+                exit 1
+            fi
+            
+            for TERM in "$@"; do
+                MATCHES=$(fuzzy_search_recipe "$TERM")
+                if [ $? -eq 0 ]; then
+                    echo ""
+                    echo "Résultats pour '$TERM' :"
+                    echo "$MATCHES" | while read recipe; do
+                        echo "  - $recipe"
+                    done
+                    echo ""
+                fi
+            done
+            exit 0
+            ;;
+        --search)
+            shift
+            if [ $# -eq 0 ]; then
+                log_error "Spécifiez au moins une recette à rechercher"
+                exit 1
+            fi
+            
+            for RECIPE in "$@"; do
+                search_layer_index "$RECIPE"
+            done
+            exit 0
+            ;;
+        --help)
+            $0
+            exit 0
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# Les arguments restants sont les bibliothèques à installer
+LIBS_TO_INSTALL=("$@")
+
+if [ ${#LIBS_TO_INSTALL[@]} -eq 0 ]; then
+    log_error "Aucune bibliothèque spécifiée"
+    $0 --help
+    exit 1
 fi
 
 # ============================================================================
@@ -243,70 +406,99 @@ echo ""
 BUILT_SUCCESS=()
 BUILT_FAILED=()
 NOT_FOUND=()
+SKIPPED=()
 
-for LIB in "$@"; do
+for LIB in "${LIBS_TO_INSTALL[@]}"; do
     echo "=========================================================================="
     echo "  BUILD : $LIB"
     echo "=========================================================================="
     
-    # Vérifier que la recette existe
+    RECIPE_TO_BUILD="$LIB"
+    
+    # Vérifier que la recette existe (recherche exacte)
     log_info "Vérification de la recette $LIB..."
     
     if ! bitbake-layers show-recipes "$LIB" &> /dev/null; then
-        log_error "Recette $LIB introuvable dans les layers actuels"
-        NOT_FOUND+=("$LIB")
+        log_warning "Recette '$LIB' non trouvée avec le nom exact"
         
-        # Proposer une recherche
-        echo ""
-        log_info "Vous pouvez rechercher cette recette avec :"
-        echo "  $0 --search $LIB"
-        echo ""
-        continue
-    fi
-    
-    log_success "Recette $LIB trouvée"
-    
-    # Afficher les informations sur la recette
-    echo ""
-    log_info "Informations sur la recette :"
-    bitbake-layers show-recipes "$LIB" | head -10 || true
-    echo ""
-    
-    # Utiliser devtool pour modifier la recette (setup workspace)
-    if [ ! -d "$WORKSPACE/$LIB" ]; then
-        log_info "Initialisation de l'espace de travail avec devtool..."
+        # Tentative de recherche floue
+        MATCHES=$(fuzzy_search_recipe "$LIB")
         
-        if devtool modify "$LIB" 2>&1; then
-            log_success "Espace de travail initialisé pour $LIB"
+        if [ $? -eq 0 ]; then
+            # Sélection interactive
+            SELECTED=$(select_recipe_interactive "$LIB" "$MATCHES")
+            
+            if [ $? -eq 0 ]; then
+                RECIPE_TO_BUILD="$SELECTED"
+            else
+                NOT_FOUND+=("$LIB")
+                echo ""
+                log_info "Vous pouvez rechercher cette recette avec :"
+                echo "  $0 --search $LIB"
+                echo ""
+                continue
+            fi
         else
-            log_error "Échec de l'initialisation de l'espace de travail"
-            BUILT_FAILED+=("$LIB")
+            log_error "Aucune recette similaire trouvée"
+            NOT_FOUND+=("$LIB")
+            echo ""
+            log_info "Vous pouvez rechercher cette recette avec :"
+            echo "  $0 --search $LIB"
+            echo ""
             continue
         fi
     else
-        log_success "Espace de travail déjà initialisé pour $LIB"
+        log_success "Recette $LIB trouvée"
+    fi
+    
+    # Confirmation d'installation (si pas en mode --no-confirm)
+    if [ "$NO_CONFIRM" = false ]; then
+        if ! confirm_installation "$RECIPE_TO_BUILD"; then
+            SKIPPED+=("$RECIPE_TO_BUILD")
+            echo ""
+            continue
+        fi
+    fi
+    
+    echo ""
+    log_info "Installation de : $RECIPE_TO_BUILD"
+    echo ""
+    
+    # Utiliser devtool pour modifier la recette (setup workspace)
+    if [ ! -d "$WORKSPACE/$RECIPE_TO_BUILD" ]; then
+        log_info "Initialisation de l'espace de travail avec devtool..."
+        
+        if devtool modify "$RECIPE_TO_BUILD" 2>&1; then
+            log_success "Espace de travail initialisé pour $RECIPE_TO_BUILD"
+        else
+            log_error "Échec de l'initialisation de l'espace de travail"
+            BUILT_FAILED+=("$RECIPE_TO_BUILD")
+            continue
+        fi
+    else
+        log_success "Espace de travail déjà initialisé pour $RECIPE_TO_BUILD"
     fi
     
     # Build de la bibliothèque
-    log_info "Compilation de $LIB en cours..."
+    log_info "Compilation de $RECIPE_TO_BUILD en cours..."
     echo ""
     
-    if devtool build "$LIB" 2>&1; then
-        log_success "✓ $LIB compilé avec succès"
-        BUILT_SUCCESS+=("$LIB")
+    if devtool build "$RECIPE_TO_BUILD" 2>&1; then
+        log_success "✓ $RECIPE_TO_BUILD compilé avec succès"
+        BUILT_SUCCESS+=("$RECIPE_TO_BUILD")
         
         # Afficher le chemin des artefacts
         echo ""
         log_info "Artefacts de build disponibles dans :"
-        echo "  $WORKSPACE/$LIB"
+        echo "  $WORKSPACE/$RECIPE_TO_BUILD"
         
     else
-        log_error "✗ Échec de la compilation de $LIB"
-        BUILT_FAILED+=("$LIB")
+        log_error "✗ Échec de la compilation de $RECIPE_TO_BUILD"
+        BUILT_FAILED+=("$RECIPE_TO_BUILD")
         
         # Nettoyer l'espace de travail en cas d'échec
         log_info "Nettoyage de l'espace de travail..."
-        devtool reset "$LIB" 2>&1 || true
+        devtool reset "$RECIPE_TO_BUILD" 2>&1 || true
     fi
     
     echo ""
@@ -336,6 +528,14 @@ if [ ${#BUILT_FAILED[@]} -gt 0 ]; then
     echo ""
 fi
 
+if [ ${#SKIPPED[@]} -gt 0 ]; then
+    echo -e "${YELLOW}⊘ Installations annulées (${#SKIPPED[@]}) :${NC}"
+    for lib in "${SKIPPED[@]}"; do
+        echo "  - $lib"
+    done
+    echo ""
+fi
+
 if [ ${#NOT_FOUND[@]} -gt 0 ]; then
     echo -e "${YELLOW}⚠ Recettes introuvables (${#NOT_FOUND[@]}) :${NC}"
     for lib in "${NOT_FOUND[@]}"; do
@@ -344,6 +544,7 @@ if [ ${#NOT_FOUND[@]} -gt 0 ]; then
     echo ""
     echo "Pour rechercher ces recettes :"
     echo "  $0 --search ${NOT_FOUND[@]}"
+    echo "  $0 --fuzzy ${NOT_FOUND[@]}"
     echo ""
 fi
 

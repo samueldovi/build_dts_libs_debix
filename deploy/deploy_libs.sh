@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # 1. Chargement des identifiants
-if [ -f cred.conf ]; then
-    source cred.conf
+if [ -f debix.conf ]; then
+    source debix.conf
 else
-    echo "Erreur : cred.conf est introuvable !"
+    echo "Erreur : debix.conf est introuvable !"
     exit 1
 fi
 
@@ -16,24 +16,41 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
-# 3. Traitement de chaque bibliothèque passée en argument
+# 3. Boucle principale
 for LIB in "$@"; do
     echo "------------------------------------------"
-    echo "CIBLE : $LIB"
+    echo "TRAITEMENT : $LIB"
     echo "------------------------------------------"
 
-    # Ajout au workspace (ignore l'erreur si déjà présent)
-    devtool add "$LIB" 2>/dev/null || echo "Info : $LIB est déjà dans le workspace."
+    # Tentative d'ajout. Si cela échoue, on tente une réparation.
+    if ! devtool add "$LIB" 2>/dev/null; then
+        echo "Attention : Echec de l'ajout initial de $LIB."
+        echo "Tentative de nettoyage et de re-ajout..."
+        
+        # On force le reset pour nettoyer la recette cassée
+        devtool reset "$LIB" > /dev/null 2>&1
+        # On supprime le dossier source potentiellement corrompu
+        rm -rf "workspace/sources/$LIB"
+        
+        # On réessaie d'ajouter proprement
+        if ! devtool add "$LIB"; then
+            echo "Erreur critique : Impossible d'ajouter la recette $LIB. Passage a la suivante."
+            continue
+        fi
+    fi
 
-    # Compilation de la bibliothèque
     echo "Compilation de $LIB en cours..."
     if devtool build "$LIB"; then
-        # Déploiement vers la carte
-        echo "Déploiement vers $TARGET..."
+        echo "Deploiement vers $TARGET..."
         devtool deploy-target "$LIB" "$TARGET"
+        if [ $? -eq 0 ]; then
+            echo "Succes pour $LIB."
+        else
+            echo "Erreur lors du transfert SSH pour $LIB."
+        fi
     else
-        echo "Erreur : La compilation de $LIB a échoué. Déploiement annulé."
+        echo "Erreur : La compilation de $LIB a echoue."
     fi
     
-    echo -e "Traitement de $LIB terminé.\n"
+    echo ""
 done

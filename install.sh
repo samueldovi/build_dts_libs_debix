@@ -11,7 +11,11 @@ REPO_MANIFEST="imx-6.6.36-2.1.0.xml"
 echo "-------------------------------------------------------"
 echo "Installation et Configuration Yocto i.MX8MP EVK"
 echo "-------------------------------------------------------"
-
+# Force l'utilisation de Python via pyenv si disponible
+if command -v pyenv &> /dev/null; then
+    eval "$(pyenv init -)"
+    pyenv shell 3.12
+fi
 # 2. Installation de l'outil 'repo' si nécessaire
 if ! command -v repo &> /dev/null; then
     echo "Outil 'repo' non trouvé. Installation en cours..."

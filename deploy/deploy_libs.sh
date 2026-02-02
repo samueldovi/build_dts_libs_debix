@@ -1,65 +1,97 @@
 #!/bin/bash
+set -e
 
-# 1. Chargement des identifiants
-if [ -f cred.conf ]; then
-    source cred.conf
-else
-    echo "[ERREUR] cred.conf est introuvable !"
-    exit 1
-fi
+# ==========================================
+# CONFIG
+# ==========================================
+SOURCES="../sources"
+BUILD_CONF="conf/bblayers.conf"
+WORKSPACE="workspace/sources"
 
-TARGET="$TARGET_USER@$TARGET_IP"
+META_OE="$SOURCES/meta-openembedded"
+META_FS="$SOURCES/meta-freescale"
+META_FS_DISTRO="$SOURCES/meta-freescale-distro"
+META_FS_3P="$SOURCES/meta-freescale-3rdparty"
 
-# 2. Verification des arguments
+LAYERS=(
+    "$META_OE/meta-oe"
+    "$META_OE/meta-python"
+    "$META_OE/meta-networking"
+    "$META_OE/meta-multimedia"
+    "$META_FS"
+    "$META_FS_DISTRO"
+    "$META_FS_3P"
+)
+
+# ==========================================
+# USAGE
+# ==========================================
 if [ $# -eq 0 ]; then
-    echo "Usage : ./deploy_libs.sh nom_lib1 nom_lib2 ..."
+    echo "Usage: $0 lib1 lib2 ..."
     exit 1
 fi
 
-# 3. Boucle principale
-for LIB in "$@"; do
-    echo "------------------------------------------"
-    echo "TRAITEMENT : $LIB"
-    echo "------------------------------------------"
+# ==========================================
+# PRECHECK
+# ==========================================
+command -v bitbake >/dev/null || {
+    echo "[ERREUR] Environnement Yocto non sourcé"
+    exit 1
+}
 
-    # Preparation
-    echo ">>> Preparation de $LIB..."
-    
-    # Verification de l'existence de la recette dans les layers
-    if ! bitbake-layers show-recipes "$LIB" > /dev/null 2>&1; then
-        echo "[ERREUR CRITIQUE] La recette $LIB est introuvable dans vos layers."
-        echo "Verifiez votre bblayers.conf."
+command -v devtool >/dev/null || {
+    echo "[ERREUR] devtool introuvable"
+    exit 1
+}
+
+# ==========================================
+# CLONE LAYERS SI NECESSAIRE
+# ==========================================
+[ -d "$META_OE" ] || git clone https://git.openembedded.org/meta-openembedded "$META_OE"
+[ -d "$META_FS" ] || git clone https://github.com/Freescale/meta-freescale "$META_FS"
+[ -d "$META_FS_DISTRO" ] || git clone https://github.com/Freescale/meta-freescale-distro "$META_FS_DISTRO"
+[ -d "$META_FS_3P" ] || git clone https://github.com/Freescale/meta-freescale-3rdparty "$META_FS_3P"
+
+# ==========================================
+# AJOUT DES LAYERS
+# ==========================================
+echo "=== Vérification des layers i.MX8 ==="
+
+for L in "${LAYERS[@]}"; do
+    NAME=$(basename "$L")
+    if ! grep -q "$NAME" "$BUILD_CONF"; then
+        echo "[ADD] $NAME"
+        bitbake-layers add-layer "$L"
+    else
+        echo "[OK] $NAME"
+    fi
+done
+
+# ==========================================
+# BUILD DES LIBS
+# ==========================================
+for LIB in "$@"; do
+    echo "=========================================="
+    echo "LIB : $LIB"
+    echo "=========================================="
+
+    if ! bitbake-layers show-recipes "$LIB" >/dev/null 2>&1; then
+        echo "[ERREUR] Recette $LIB introuvable (layer manquant ?)"
         continue
     fi
 
-    # Tentative de modification (modify)
-    devtool modify "$LIB" > /dev/null 2>&1
-    
-    # Si modify a echoue mais que le dossier n'est pas propre, on nettoie
-    if [ ! -d "workspace/sources/$LIB" ]; then
-        echo "[INFO] Echec de l'ajout initial. Tentative de nettoyage..."
-        devtool reset "$LIB" > /dev/null 2>&1
-        rm -rf "workspace/sources/$LIB"
-        
-        if ! devtool modify "$LIB"; then
-             echo "[ERREUR] Impossible de preparer $LIB. Abandon."
-             continue
-        fi
+    if [ ! -d "$WORKSPACE/$LIB" ]; then
+        echo "[INFO] devtool modify $LIB"
+        devtool modify "$LIB" || continue
     fi
 
-    # Compilation
-    echo ">>> Compilation de $LIB en cours..."
+    echo "[INFO] devtool build $LIB"
     if devtool build "$LIB"; then
-        echo ">>> Deploiement vers $TARGET..."
-        devtool deploy-target "$LIB" "$TARGET"
-        if [ $? -eq 0 ]; then
-            echo "[SUCCES] $LIB deploye."
-        else
-            echo "[ERREUR] Echec du transfert SSH pour $LIB."
-        fi
+        echo "[SUCCES] $LIB compilée"
     else
-        echo "[ERREUR] La compilation de $LIB a echoue."
+        echo "[ERREUR] Build échoué pour $LIB"
+        devtool reset "$LIB" || true
     fi
-    
-    echo ""
+
+    echo
 done

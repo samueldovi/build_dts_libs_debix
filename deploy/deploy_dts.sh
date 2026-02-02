@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # 1. Chargement des identifiants
-if [ -f debix.conf ]; then
-    source debix.conf
+if [ -f cred.conf ]; then
+    source cred.conf
 else
-    echo "Erreur : debix.conf introuvable !"
+    echo "Erreur : cred.conf introuvable !"
     exit 1
 fi
-
 TARGET="$TARGET_USER@$TARGET_IP"
 
 # 2. Vérification des arguments

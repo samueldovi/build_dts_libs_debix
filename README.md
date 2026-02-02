@@ -13,7 +13,7 @@ sudo apt install gawk wget git diffstat unzip texinfo gcc build-essential chrpat
 Ce script va installer l'environnement yocto et copier les scripts utilitaires dans le dossier build.
 
 ```bash
-    source patch.sh
+source install.sh
 ```
 
 ## 3. Configuration des scripts de déploiement

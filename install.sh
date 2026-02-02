@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- CONFIGURATION ---
-MACHINE_NAME="imx8mp-debix-model-a"
+MACHINE_NAME="imx8mpevk"
 GIT_URL="https://github.com/debix-tech/yocto-nxp-debix"
 GIT_BRANCH="L6.6.36-2.1.0-debix_model_ab"
 PROJECT_DIR="debix-yocto-bsp"
